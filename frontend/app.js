@@ -1,4 +1,4 @@
-let API_URL = `http://10.10.3.11:8001`; 
+let API_URL = `https://vokabel-trainer-backend.onrender.com`; 
 let currentUser = null; 
 let currentLanguage = 'Latein';
 let testPool = [];
