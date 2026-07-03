@@ -1,0 +1,18 @@
+services:
+  backend:
+    build: ./backend
+    container_name: vokabel-backend
+    ports:
+      - "8001:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    restart: always
+
+  frontend:
+    build: ./frontend
+    container_name: vokabel-frontend
+    ports:
+      - "8502:80"  # Wir behalten Port 8501 für dich bei!
+    restart: always

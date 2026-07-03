@@ -1,0 +1,13 @@
+# Lokale Geheimnisse
+.env
+
+# Kopien und Backups
+*.copy
+*.copy2
+*copy*
+
+# Python & Docker
+__pycache__/
+*.pyc
+.DS_Store
+data/

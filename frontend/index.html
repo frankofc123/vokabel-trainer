@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vokabel Trainer Pro PWA</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script>
+        window.addEventListener('error', function(e) {
+            if (e.target.tagName === 'LINK') {
+                console.log("CDN blockiert oder offline. Aktiviere CSS-Notbetrieb.");
+            }
+        }, true);
+    </script>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="mask-icon" href="/icons/monochrome.svg" color="#212529">
+    <style>
+        /* Grundlayout */
+        body { background-color: #f8f9fa; }
+        .sidebar { min-height: 100vh; background-color: #212529; color: white; padding: 20px; }
+        .sidebar .nav-link { color: #adb5bd; cursor: pointer; }
+        .sidebar .nav-link.active { color: white; font-weight: bold; background-color: #495057; border-radius: 5px; }
+        
+        /* Gamification */
+        .wreath-container { text-align: center; font-size: 24px; padding: 15px; background: rgba(255, 215, 0, 0.05); border-radius: 15px; border: 1px solid rgba(255, 215, 0, 0.2); }
+        .leaf-gold { color: #FFD700; text-shadow: 0 0 10px #FFD700; }
+        .leaf-grey { color: #D3D3D3; }
+        
+        /* Navigation für Smartphones (Bottom Bar) */
+        .mobile-nav { display: none; background-color: #212529; }
+        .mobile-header-settings { display: none; }
+
+        /* Vergibt einen weicheren, modernen Hintergrund für die gesamte App */
+        body { background-color: #f1f3f5 !important; }
+
+        /* RESPONSIVE DESIGN FOR IPHONE */
+        @media (max-width: 767.98px) {
+            .sidebar { display: none !important; } 
+            
+            .mobile-header-settings { 
+                display: flex; 
+                position: fixed;
+                top: 0; left: 0; right: 0;
+                height: 60px;
+                background: #212529; 
+                color: white;
+                z-index: 1030; 
+                padding: 10px 15px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+                align-items: center;
+            }
+            
+            .mobile-nav { 
+                display: flex; 
+                position: fixed; 
+                bottom: 0; left: 0; right: 0; 
+                height: 65px;
+                background-color: #212529;
+                z-index: 1030; 
+                box-shadow: 0 -2px 10px rgba(0,0,0,0.15); 
+            }
+            
+            .mobile-nav .nav-link { 
+                color: #adb5bd; 
+                text-align: center; 
+                font-size: 11px; 
+                padding: 8px 0; 
+                flex: 1; 
+                cursor: pointer; 
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+            }
+            
+            .mobile-nav .nav-link.active { color: white; font-weight: bold; background-color: #343a40; }
+            
+            /* Sorgt für den perfekten, sauberen Abstand */
+            main { padding-top: 0px !important; padding-bottom: 80px !important; } 
+            .page-content { padding-top: 100px !important; padding-left: 10px; padding-right: 10px; }
+            
+            /* Lässt die weiße Lern-Karte modern und edel aussehen */
+            #setup-test-zone, #active-test-zone { 
+                border-radius: 16px !important; 
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05) !important;
+                border: 1px solid rgba(0, 0, 0, 0.03) !important;
+            }
+        }
+
+    </style>
+</head>
+<body>
+    <div id="auth-zone" class="container py-5" style="max-width: 450px;">
+        <div class="card p-4 shadow border-0 mt-5">
+            <h3 class="text-center mb-4">🏛️ Vokabel Trainer</h3>
+            <input type="text" id="username" class="form-control mb-2" placeholder="Benutzername">
+            <input type="password" id="password" class="form-control mb-3" placeholder="Passwort">
+            <button type="button" id="login-btn" class="btn btn-primary w-100 py-2 fw-bold">Anmelden</button>
+        </div>
+    </div>
+
+    <div id="app-zone" class="container-fluid d-none">
+        
+        <div class="mobile-header-settings row g-0 w-100 align-items-center">
+            <div class="col-5">
+                <select id="lang-select-mobile" class="form-select form-select-sm bg-dark text-white border-secondary" onchange="changeLanguageMobile()">
+                    <option value="Latein">🏛️ Latein</option>
+                    <option value="Englisch">🇬🇧 Englisch</option>
+                </select>
+            </div>
+            <div class="col-7 text-end d-flex justify-content-end gap-1">
+                <button onclick="triggerSync()" class="btn btn-sm btn-outline-success py-1 px-2" style="font-size: 12px;">🔄 Sync</button>
+                <button onclick="logout()" class="btn btn-sm btn-outline-danger py-1 px-2" style="font-size: 12px;">🚪 Abmelden</button>
+            </div>
+        </div>
+
+        <div class="row">
+            <nav class="col-md-3 col-lg-2 sidebar">
+                <div class="position-sticky">
+                    <h4 class="mb-4">🌍 Einstellungen</h4>
+                    <select id="lang-select" class="form-select mb-4" onchange="changeLanguage()">
+                        <option value="Latein">🏛️ Latein</option>
+                        <option value="Englisch">🇬🇧 Englisch</option>
+                    </select>
+                    
+                    <h4 class="mb-3">Navigation</h4>
+                    <ul class="nav flex-column mb-4">
+                        <li class="nav-item"><a class="nav-link active nav-link-lernen" onclick="switchPage('lernen')">🎯 Lernen</a></li>
+                        <li class="nav-item"><a class="nav-link nav-link-statistik" onclick="switchPage('statistik')">📊 Statistik</a></li>
+                        <li class="nav-item"><a class="nav-link nav-link-neue" onclick="switchPage('neue')">➕ Neue Vokabeln</a></li>
+                        <li class="nav-item"><a class="nav-link nav-link-bibliothek" onclick="switchPage('bibliothek')">📖 Bibliothek</a></li>
+                    </ul>
+                    <hr>
+                    <div class="small mb-2">User: <strong id="user-display">—</strong></div>
+                    <button onclick="triggerSync()" id="sync-btn" class="btn btn-sm btn-outline-success w-100 mb-2">🔄 Synchronisieren</button>
+                    <button onclick="logout()" class="btn btn-sm btn-outline-danger w-100">🚪 Abmelden</button>
+                </div>
+            </nav>
+
+            <nav class="mobile-nav">
+                <a class="nav-link active nav-link-lernen" onclick="switchPage('lernen')"><span class="mobile-nav-icon">🎯</span>Lernen</a>
+                <a class="nav-link nav-link-statistik" onclick="switchPage('statistik')"><span class="mobile-nav-icon">📊</span>Statistik</a>
+                <a class="nav-link nav-link-neue" onclick="switchPage('neue')"><span class="mobile-nav-icon">➕</span>Neu</a>
+                <a class="nav-link nav-link-bibliothek" onclick="switchPage('bibliothek')"><span class="mobile-nav-icon">📖</span>Bib</a>
+            </nav>
+
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 py-4">
+                
+                <div id="page-lernen" class="page-content">
+                    <h2 class="h4 mb-3 d-none d-md-block">🎯 Vokabeln lernen</h2>
+                    <div id="setup-test-zone" class="card p-3 p-md-4 shadow-sm border-0 mb-4">
+                        <h5 class="card-title fs-6 fw-bold mb-3">Welche Lektionen möchtest du üben?</h5>
+                        <div id="lessons-checkboxes" class="my-2" style="max-height: 250px; overflow-y: auto;"></div>
+                        <hr>
+                        <div class="row g-2 align-items-center">
+                            <div class="col-auto"><label class="small text-muted">Anzahl:</label></div>
+                            <div class="col-3"><input type="number" id="test-count" class="form-control form-control-sm text-center" value="10" min="1"></div>
+                            <div class="col-7"><button onclick="startTest()" class="btn btn-primary btn-sm w-100 fw-bold">🚀 Starten</button></div>
+                        </div>
+                    </div>
+                    
+                    <div id="active-test-zone" class="card p-4 shadow-sm border-0 text-center d-none" style="max-width: 600px; margin: auto;">
+                        <h6 id="test-progress" class="text-muted small">Frage 1 von X</h6>
+                        <h2 id="question-word" class="my-4 text-primary font-monospace">—</h2>
+                        <input type="text" id="user-answer" class="form-control form-control-lg mb-3 text-center shadow-sm" placeholder="Deine Übersetzung...">
+                        
+                        <div id="genus-zone" class="mb-3 d-none">
+                            <label class="d-block mb-2 small text-muted">Genus wählen:</label>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="genus-opt" id="g-m" value="m"><label class="btn btn-outline-secondary btn-sm" for="g-m">m</label>
+                                <input type="radio" class="btn-check" name="genus-opt" id="g-f" value="f"><label class="btn btn-outline-secondary btn-sm" for="g-f">f</label>
+                                <input type="radio" class="btn-check" name="genus-opt" id="g-n" value="n"><label class="btn btn-outline-secondary btn-sm" for="g-n">n</label>
+                            </div>
+                        </div>
+
+                        <button onclick="checkAnswer()" id="check-btn" class="btn btn-dark w-100 btn-lg fw-bold shadow">Prüfen</button>
+                        <div id="result-box" class="mt-3 alert d-none fw-bold"></div>
+                        <button onclick="nextQuestion()" id="next-btn" class="btn btn-primary w-100 btn-lg fw-bold d-none shadow">Weiter ➡️</button>
+                    </div>
+                </div>
+
+                <div id="page-statistik" class="page-content d-none">
+                    <h2 class="h4 mb-3">📊 Dein Fortschritt</h2>
+                    <div class="row g-2 my-2">
+                        <div class="col-6 col-md-4"><div class="card p-3 border-0 shadow-sm text-center"><h6>Gesamt</h6><h3 id="stat-total" class="fs-4 text-dark fw-bold">0</h3></div></div>
+                        <div class="col-6 col-md-4"><div class="card p-3 border-0 shadow-sm text-center text-success"><h6>Meister ✅</h6><h3 id="stat-mastered" class="fs-4 fw-bold">0</h3></div></div>
+                        <div class="col-12 col-md-4"><div class="card p-3 border-0 shadow-sm text-center text-danger"><h6>Zu erobern ⚔️</h6><h3 id="stat-remaining" class="fs-4 fw-bold">0</h3></div></div>
+                    </div>
+                    <h5 class="mt-4 fs-6 fw-bold">Dein Weg zum Imperator</h5>
+                    <div class="progress mb-4 shadow-sm" style="height: 22px;"><div id="stat-progress-bar" class="progress-bar bg-success fw-bold" style="width: 0%">0%</div></div>
+                    <div id="wreath-output" class="mb-4"></div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3"><h5>🏹 Die Angstgegner</h5><div id="angstgegner-list" class="list-group shadow-sm" style="font-size:13px;"></div></div>
+                        <div class="col-md-6 mb-3"><h5>🏆 Die Helden</h5><div id="helden-list" class="list-group shadow-sm" style="font-size:13px;"></div></div>
+                    </div>
+                </div>
+
+                <div id="page-neue" class="page-content d-none">
+                    <h2 class="h4 mb-3">➕ Neue Liste erstellen</h2>
+                    <div class="card p-3 shadow-sm border-0" style="max-width: 600px;">
+                        <div class="mb-3"><label class="form-label small fw-bold">Name der Lektion:</label><input type="text" id="new-lesson-name" class="form-control" placeholder="z.B. Lektion 12"></div>
+                        <button onclick="createNewLessonOnly()" class="btn btn-success btn-sm w-100 fw-bold">Leere Lektion anlegen</button>
+                    </div>
+                </div>
+
+                <div id="page-bibliothek" class="page-content d-none">
+                    <h2 class="h4 mb-3">📖 Bibliothek</h2>
+                    <div id="library-container" style="font-size: 13px;"></div>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script>
+        let API_URL = `http://10.10.3.11:8001`; 
+        let currentUser = null; 
+        let currentLanguage = 'Latein';
+        let testPool = [];
+        let testIdx = 0;
+        let score = 0;
+
+        // === DIE RADIKALE RETTUNG FÜR IOS ===
+        // Wir prüfen SOFORT, noch bevor irgendwas anderes geladen wird, ob wir im Offline-Modus sind
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedUser = localStorage.getItem('last_user');
+            
+            // Wenn jemals ein User eingeloggt war, lassen wir ihn im Bus EINFACH DRIN!
+            // Wir erzwingen offline KEINE Passworteingabe mehr, da iOS den Service Worker ohne HTTPS blockiert.
+            if (savedUser) {
+                currentUser = savedUser;
+                console.log("Offline-Modus: Automatischer Login für " + currentUser);
+                showApp();
+            } else {
+                // Nur wenn die App komplett jungfräulich ist, zeigen wir die Maske
+                const az = document.getElementById('auth-zone');
+                const lz = document.getElementById('app-zone');
+                if (az) az.classList.remove('d-none');
+                if (lz) lz.classList.add('d-none');
+            }
+
+            const loginBtn = document.getElementById('login-btn');
+            if (loginBtn) {
+                loginBtn.addEventListener('click', handleLoginAttempt);
+            }
+        });
+
+        function handleLoginAttempt() {
+            const userInput = document.getElementById('username');
+            const passInput = document.getElementById('password');
+            if (!userInput || !passInput) return;
+
+            const user = userInput.value.trim();
+            const pass = passInput.value;
+
+            if (!user || !pass) {
+                alert("Bitte Zugangsdaten eingeben.");
+                return;
+            }
+
+            // Da wir im WLAN sind, loggen wir uns regulär online ein
+            const currentHash = btoa(user.toLowerCase() + ":" + pass);
+            executeOnlineLogin(user, pass, currentHash);
+        }
+
+        function executeOnlineLogin(user, pass, currentHash) {
+            fetch(`${API_URL}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user, password: pass })
+            })
+            .then(res => res.json())
+            .then(resData => {
+                currentUser = resData.username || user;
+                // WICHTIG: Wir brennen den User unwiderruflich in den localStorage
+                localStorage.setItem('last_user', currentUser);
+                localStorage.setItem('offline_auth_hash', currentHash); 
+                showApp();
+                downloadFromServer();
+            })
+            .catch(err => {
+                // Fallback, falls der Mac Mini im LAN mal zickt, aber Daten da sind
+                const storedUser = localStorage.getItem('last_user');
+                if (storedUser && storedUser.toLowerCase() === user.toLowerCase()) {
+                    currentUser = storedUser;
+                    showApp();
+                } else {
+                    alert("❌ Online-Login fehlgeschlagen. Mac Mini erreichbar?");
+                }
+            });
+        }
+
+        function showApp() {
+            const az = document.getElementById('auth-zone');
+            const lz = document.getElementById('app-zone');
+            if (az) az.classList.add('d-none');
+            if (lz) lz.classList.remove('d-none');
+            const userDisplay = document.getElementById('user-display');
+            if (userDisplay) userDisplay.innerText = currentUser;
+            buildInterface();
+        }
+
+        // Modifiziertes Abmelden: Wir löschen den User NICHT, damit er im Bus reinkommt!
+        function logout() {
+            if(!confirm("Möchtest du dich wirklich abmelden? Im Bus kommst du ohne WLAN erst wieder rein, wenn du dich im LAN neu angemeldet hast!")) {
+                return;
+            }
+            localStorage.clear(); // Löscht alles für einen echten Reset
+            location.reload();
+        }
+
+        // --- AB HIER BLEIBT DEINE ENGINE IDENTISCH ---
+        function executeBackgroundNetworkCheck(user, pass) {
+            if (!navigator.onLine) return;
+            fetch(`${API_URL}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user, password: pass })
+            }).then(res => { if (res.ok) downloadFromServer(); });
+        }
+
+        function login() { handleLoginAttempt(); }
+
+        function downloadFromServer() {
+            if (!navigator.onLine || !currentUser) return;
+            fetch(`${API_URL}/api/vocab/${currentUser}/${currentLanguage}`)
+            .then(res => { if (res.ok) return res.json(); })
+            .then(lessons => {
+                if(lessons) {
+                    localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(lessons));
+                    buildInterface();
+                }
+            }).catch(e => buildInterface());
+        }
+
+        function changeLanguage() {
+            const desktopSelect = document.getElementById('lang-select');
+            currentLanguage = desktopSelect ? desktopSelect.value : 'Latein';
+            downloadFromServer();
+        }
+
+        function switchPage(pageId) {
+            document.querySelectorAll('.page-content').forEach(p => p.classList.add('d-none'));
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            document.querySelectorAll('.nav-link-' + pageId).forEach(l => l.classList.add('active'));
+            const targetPage = document.getElementById('page-' + pageId);
+            if (targetPage) targetPage.classList.remove('d-none');
+            buildInterface();
+        }
+
+        function buildInterface() {
+            const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+            const checkboxZone = document.getElementById('lessons-checkboxes');
+            if (!checkboxZone) return;
+            
+            checkboxZone.innerHTML = '';
+            checkboxZone.innerHTML += `<div class="form-check"><input class="form-check-input spec-filter" type="checkbox" value="nochmal" id="f-nochmal"><label class="form-check-label fw-bold" for="f-nochmal">🔄 nochmal üben / offen</label></div>`;
+            checkboxZone.innerHTML += `<div class="form-check mb-3"><input class="form-check-input spec-filter" type="checkbox" value="gut" id="f-gut"><label class="form-check-label fw-bold" for="f-gut">✅ sehr gut</label></div>`;
+
+            for (let lesson in data) {
+                checkboxZone.innerHTML += `<div class="form-check"><input class="form-check-input lesson-check" type="checkbox" value="${lesson}" id="l-${lesson}"><label class="form-check-label" for="l-${lesson}">📖 ${lesson}</label></div>`;
+            }
+            calculateStatistics(data);
+            renderLibrary(data);
+        }
+
+        function startTest() {
+            const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+            let combined = [];
+            const filterNochmal = document.getElementById('f-nochmal').checked;
+            const filterGut = document.getElementById('f-gut').checked;
+            let activeLessons = Array.from(document.querySelectorAll('.lesson-check:checked')).map(c => c.value);
+            if(activeLessons.length === 0 && (filterNochmal || filterGut)) activeLessons = Object.keys(data);
+
+            activeLessons.forEach(l => {
+                if(data[l]) {
+                    data[l].forEach(v => {
+                        v.origin_file = l;
+                        let status = v.status || 'gar nicht';
+                        if(filterNochmal && (status === 'gar nicht' || status === 'nochmal üben')) combined.push(v);
+                        else if(filterGut && status === 'sehr gut') combined.push(v);
+                        else if(!filterNochmal && !filterGut) combined.push(v);
+                    });
+                }
+            });
+
+            testPool = Array.from(new Map(combined.map(item => [item.wort, item])).values());
+            if(testPool.length === 0) return alert("Keine Vokabeln gefunden!");
+
+            testPool.sort(() => Math.random() - 0.5);
+            const count = Math.min(parseInt(document.getElementById('test-count').value) || 10, testPool.length);
+            testPool = testPool.slice(0, count);
+            testIdx = 0; score = 0;
+
+            document.getElementById('setup-test-zone').classList.add('d-none');
+            document.getElementById('active-test-zone').classList.remove('d-none');
+            showQuestion();
+        }
+
+        function showQuestion() {
+            const currentItem = testPool[testIdx];
+            document.getElementById('test-progress').innerText = `Frage ${testIdx + 1} von ${testPool.length}`;
+            document.getElementById('question-word').innerText = currentItem.wort;
+            document.getElementById('user-answer').value = '';
+            document.getElementById('user-answer').disabled = false;
+            document.getElementById('result-box').classList.add('d-none');
+            document.getElementById('next-btn').classList.add('d-none');
+            document.getElementById('check-btn').classList.remove('d-none');
+
+            const genusZone = document.getElementById('genus-zone');
+            if(currentLanguage === 'Latein' && currentItem.genus && ['m','f','n'].includes(currentItem.genus)) {
+                genusZone.classList.remove('d-none');
+                document.querySelectorAll('input[name="genus-opt"]').forEach(r => r.checked = false);
+            } else {
+                genusZone.classList.add('d-none');
+            }
+        }
+
+        // (Restliche Hilfsfunktionen bleiben identisch wie in deiner Index.html...)
+        function checkAnswer() {
+            const currentItem = testPool[testIdx];
+            const input = document.getElementById('user-answer').value.toLowerCase().trim();
+            let hasGenus = currentLanguage === 'Latein' && currentItem.genus && ['m','f','n'].includes(currentItem.genus);
+            let genusRadio = document.querySelector('input[name="genus-opt"]:checked');
+            if(!input) return alert("Bitte eine Übersetzung eingeben!");
+            if(hasGenus && !genusRadio) return alert("Bitte das Genus wählen!");
+            let cleanTranslation = currentItem.uebersetzung.toLowerCase().replace(/;/g, ',').replace(/\(|\)/g, ' ');
+            let stopWords = ["der", "die", "das", "ein", "eine", "ist", "zu"];
+            let validWords = cleanTranslation.split(/[,\s]+/).map(w => w.trim()).filter(w => w && !stopWords.includes(w));
+            let userWords = input.split(/\s+/);
+            let isCorrect = userWords.some(w => validWords.includes(w)) || (cleanTranslation.includes(input) && input.length > 2);
+            if(hasGenus && genusRadio.value !== currentItem.genus) isCorrect = false;
+            const resBox = document.getElementById('result-box');
+            resBox.classList.remove('d-none', 'alert-success', 'alert-danger');
+            let displayGenus = currentItem.genus ? ` (${currentItem.genus})` : '';
+            if (isCorrect) {
+                resBox.innerText = `Richtig! 🎉 Korrekt: ${currentItem.uebersetzung}${displayGenus}`;
+                resBox.classList.add('alert-success');
+                currentItem.richtig = (currentItem.richtig || 0) + 1; currentItem.status = "sehr gut"; score++;
+            } else {
+                resBox.innerText = `Falsch! Korrekt wäre: ${currentItem.uebersetzung}${displayGenus}`;
+                resBox.classList.add('alert-danger');
+                currentItem.falsch = (currentItem.falsch || 0) + 1; currentItem.status = "nochmal üben";
+            }
+            saveProgressToLocalStorage(currentItem);
+            document.getElementById('user-answer').disabled = true;
+            document.getElementById('check-btn').classList.add('d-none');
+            document.getElementById('next-btn').classList.remove('d-none');
+        }
+        function nextQuestion() {
+            testIdx++;
+            if(testIdx < testPool.length) { showQuestion(); } 
+            else {
+                alert(`Test beendet! Score: ${score}/${testPool.length}`);
+                document.getElementById('setup-test-zone').classList.remove('d-none');
+                document.getElementById('active-test-zone').classList.add('d-none');
+                buildInterface();
+                if (navigator.onLine) triggerSyncSilently();
+            }
+        }
+        function saveProgressToLocalStorage(item) {
+            let data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+            let lesson = data[item.origin_file];
+            if(lesson) { let idx = lesson.findIndex(v => v.wort === item.wort); if(idx !== -1) lesson[idx] = item; }
+            localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(data));
+        }
+        function calculateStatistics(data) {
+            let total = 0, mastered = 0; let allVocabs = [];
+            for (let l in data) {
+                data[l].forEach(v => {
+                    total++; if(v.status === 'sehr gut') mastered++;
+                    let totalTries = (v.richtig || 0) + (v.falsch || 0);
+                    v.quote = totalTries > 0 ? ((v.falsch || 0) / totalTries) : 0;
+                    v.totalTries = totalTries; v.lektion = l; allVocabs.push(v);
+                });
+            }
+            let ratio = total > 0 ? (mastered / total) : 0;
+            if(document.getElementById('stat-total')) document.getElementById('stat-total').innerText = `${total} Wörter`;
+            if(document.getElementById('stat-mastered')) document.getElementById('stat-mastered').innerText = mastered;
+            if(document.getElementById('stat-remaining')) document.getElementById('stat-remaining').innerText = total - mastered;
+            if(document.getElementById('stat-progress-bar')) {
+                document.getElementById('stat-progress-bar').style.width = `${ratio*100}%`;
+                document.getElementById('stat-progress-bar').innerText = `${(ratio*100).toFixed(1)}%`;
+            }
+        }
+        function renderLibrary(data) {
+            const container = document.getElementById('library-container');
+            if(!container) return; container.innerHTML = '';
+            for (let lesson in data) {
+                let html = `<div class="card mb-3"><div class="card-header bg-dark text-white fw-bold">📖 Lektion: ${lesson}</div><div class="card-body p-2"><table class="table table-sm table-striped"><tbody>`;
+                data[lesson].forEach((v) => { html += `<tr><td><strong>${v.wort}</strong></td><td>${v.uebersetzung}</td></tr>`; });
+                html += `</tbody></table></div></div>`; container.innerHTML += html;
+            }
+        }
+        function createNewLessonOnly() {
+            const name = document.getElementById('new-lesson-name').value.trim(); if(!name) return;
+            let data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+            data[name] = []; localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(data)); buildInterface();
+        }
+        function triggerSync() {
+            if (!navigator.onLine) return alert("Du bist offline!");
+            const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+            fetch(`${API_URL}/api/sync/${currentUser}/${currentLanguage}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({lessons: data})
+            }).then(() => downloadFromServer());
+        }
+        function triggerSyncSilently() {
+            const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+            fetch(`${API_URL}/api/sync/${currentUser}/${currentLanguage}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({lessons: data})
+            }).catch(() => {});
+        }
+        function changeLanguageMobile() {
+            const val = document.getElementById('lang-select-mobile').value;
+            document.getElementById('lang-select').value = val; changeLanguage();
+        }
+    </script>
+    <script>
+        function changeLanguageMobile() {
+            const val = document.getElementById('lang-select-mobile').value;
+            document.getElementById('lang-select').value = val;
+            changeLanguage();
+        }
+    </script>
+    <script>
+        // Registrierung des Service Workers für echte Offline-Funktionalität
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                    .then(reg => console.log('Service Worker erfolgreich registriert!', reg))
+                    .catch(err => console.log('Service Worker Registrierung fehlgeschlagen:', err));
+            });
+        }
+    </script>
+</body>
+</html>

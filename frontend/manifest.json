@@ -1,0 +1,22 @@
+{
+  "name": "Vokabel Trainer Pro",
+  "short_name": "Vokabeln",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4e73df",
+  "icons": [
+    {
+    "src": "/icons/icon-512.png",
+    "sizes": "512x512",
+    "type": "image/png",
+    "purpose": "any"
+    },
+    {
+      "src": "/icons/monochrome.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "monochrome"
+    }
+]
+}

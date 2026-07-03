@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+passlib
+pyjwt
+requests
+pillow
+pytesseract
+pdf2image
+python-dotenv
+supabase
