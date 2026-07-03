@@ -31,36 +31,30 @@ window.addEventListener('DOMContentLoaded', () => {
 // === SCHRITT 2: DIE RADIKALE LOGIN-WEICHE (REIN SYNCHRON) ===
 function handleLoginAttempt() {
     // 1. DIAGNOSE-ALARM: Tut der Button überhaupt physisch etwas?
-    alert("DEBUG 1: Der Button wurde geklickt! JS läuft!");
 
     const userInput = document.getElementById('username');
     const passInput = document.getElementById('password');
     
     if (!userInput || !passInput) {
-        alert("DEBUG FEHLER: Eingabefelder im HTML nicht gefunden!");
         return;
     }
 
     const user = userInput.value.trim();
     const pass = passInput.value;
 
-    alert("DEBUG 2: Eingegeben: " + user + " | Passwort-Länge: " + pass.length);
 
     const currentHash = btoa(user.toLowerCase() + ":" + pass);
     const storedUser = localStorage.getItem('last_user');
     const storedHash = localStorage.getItem('offline_auth_hash');
 
-    alert("DEBUG 3: Im Speicher gefunden:\nUser: " + storedUser + "\nHash vorhanden: " + (storedHash ? "JA" : "NEIN"));
 
     if (storedUser && storedUser.toLowerCase() === user.toLowerCase() && storedHash === currentHash) {
-        alert("DEBUG 4: Daten stimmen überein! Schalte jetzt das Interface um...");
         currentUser = storedUser;
         localStorage.setItem('is_logged_in', 'true'); 
         showApp();
         return;
     }
 
-    alert("DEBUG 5: Daten stimmen NICHT mit dem Speicher überein oder Erstanmeldung! Springe in Online-Modus...");
     executeOnlineLogin(user, pass, currentHash);
 }
 
