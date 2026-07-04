@@ -248,7 +248,19 @@ function syncPendingChanges(options = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lessons: data })
     })
-    .then(res => res.json())
+    .then(async res => {
+        const text = await res.text();
+        let json;
+        try {
+            json = text ? JSON.parse(text) : {};
+        } catch (err) {
+            throw new Error(`Invalid JSON response: ${text}`);
+        }
+        if (!res.ok) {
+            throw new Error(json.detail || json.message || `HTTP ${res.status}`);
+        }
+        return json;
+    })
     .then(resData => {
         if (resData.status === 'synced') {
             localStorage.setItem('sync_pending_' + currentLanguage, 'false');
@@ -264,10 +276,11 @@ function syncPendingChanges(options = {}) {
         }
     })
     .catch(e => {
+        console.error('Sync-Fehler:', e);
         localStorage.setItem('sync_pending_' + currentLanguage, 'true');
-        updateSyncStatus('Synchronisierung wartet, bis das Gerät wieder online ist…', true);
+        updateSyncStatus(`Synchronisierung fehlgeschlagen: ${e.message}`, true);
         if (showAlert) {
-            alert('Synchronisierung konnte gerade nicht abgeschlossen werden. Die Daten bleiben lokal gespeichert.');
+            alert(`Synchronisierung konnte gerade nicht abgeschlossen werden:\n${e.message}`);
         }
     })
     .finally(() => {

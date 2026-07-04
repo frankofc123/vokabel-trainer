@@ -25,6 +25,7 @@ app.add_middleware(
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+print(f"Supabase config: url set={bool(SUPABASE_URL)}, key set={bool(SUPABASE_KEY)}")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- USER AUTH (Bleibt in users_auth.json, da klein und selten geändert) ---
@@ -91,6 +92,15 @@ def get_vocab(username: str, lang: str):
 class SyncData(BaseModel):
     lessons: dict
 
+@app.get("/api/debug")
+def debug():
+    return {
+        "SUPABASE_URL_set": bool(SUPABASE_URL),
+        "SUPABASE_KEY_set": bool(SUPABASE_KEY),
+        "SUPABASE_URL": "set" if SUPABASE_URL else "missing",
+        "SUPABASE_KEY": "set" if SUPABASE_KEY else "missing"
+    }
+
 @app.post("/api/sync/{username}/{lang}")
 def sync_vocab(username: str, lang: str, data: SyncData):
     try:
@@ -107,8 +117,10 @@ def sync_vocab(username: str, lang: str, data: SyncData):
 
             merged_rows = merge_lessons(existing_response.data or [], {lesson_name: vocabs}, username, lang)
 
-            supabase.table("vokabeln").delete()\
+            delete_response = supabase.table("vokabeln").delete()\
                 .eq("user", username).eq("sprache", lang.lower()).eq("lexikon", lesson_name).execute()
+            if getattr(delete_response, 'error', None):
+                raise HTTPException(status_code=500, detail=str(delete_response.error))
 
             payloads = [{
                 "user": row.get("user", username),
@@ -124,7 +136,9 @@ def sync_vocab(username: str, lang: str, data: SyncData):
             } for row in merged_rows if isinstance(row, dict) and row.get("wort")]
 
             if payloads:
-                supabase.table("vokabeln").insert(payloads).execute()
+                insert_response = supabase.table("vokabeln").insert(payloads).execute()
+                if getattr(insert_response, 'error', None):
+                    raise HTTPException(status_code=500, detail=str(insert_response.error))
         return {"status": "synced"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
