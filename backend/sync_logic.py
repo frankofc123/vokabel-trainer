@@ -1,14 +1,30 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 
-def _parse_ts(value: Optional[str]):
-    if not value:
-        return datetime.min
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return datetime.min
+def _parse_ts(value: Optional[Any]):
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return datetime.min.replace(tzinfo=timezone.utc)
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _get_effective_ts(row: dict):
