@@ -6,6 +6,7 @@ from supabase import create_client
 from passlib.hash import pbkdf2_sha256
 import json
 from dotenv import load_dotenv
+from sync_logic import merge_lessons
 
 app = FastAPI()
 
@@ -79,7 +80,8 @@ def get_vocab(username: str, lang: str):
             lessons[lexikon].append({
                 "wort": row["wort"], "uebersetzung": row["uebersetzung"],
                 "genus": row["genus"], "status": row["status"],
-                "richtig": row["richtig"], "falsch": row["falsch"]
+                "richtig": row["richtig"], "falsch": row["falsch"],
+                "updated_at": row.get("updated_at")
             })
         return lessons
     except Exception as e:
@@ -92,19 +94,34 @@ class SyncData(BaseModel):
 def sync_vocab(username: str, lang: str, data: SyncData):
     try:
         for lesson_name, vocabs in data.lessons.items():
-            if lesson_name in ["nochmal", "gut", "f-nochmal", "f-gut"]: continue
-            
-            # Löschen und neu schreiben (Upsert-Logik)
+            if lesson_name in ["nochmal", "gut", "f-nochmal", "f-gut"]:
+                continue
+
+            existing_response = supabase.table("vokabeln")\
+                .select("*")\
+                .eq("user", username)\
+                .eq("sprache", lang.lower())\
+                .eq("lexikon", lesson_name)\
+                .execute()
+
+            merged_rows = merge_lessons(existing_response.data or [], {lesson_name: vocabs}, username, lang)
+
             supabase.table("vokabeln").delete()\
                 .eq("user", username).eq("sprache", lang.lower()).eq("lexikon", lesson_name).execute()
-            
+
             payloads = [{
-                "user": username, "sprache": lang.lower(), "lexikon": lesson_name,
-                "wort": v.get("wort"), "uebersetzung": v.get("uebersetzung"),
-                "genus": v.get("genus", ""), "status": v.get("status", "neu"),
-                "richtig": v.get("richtig", 0), "falsch": v.get("falsch", 0)
-            } for v in vocabs if isinstance(v, dict) and "wort" in v]
-            
+                "user": row.get("user", username),
+                "sprache": row.get("sprache", lang.lower()),
+                "lexikon": row.get("lexikon", lesson_name),
+                "wort": row.get("wort"),
+                "uebersetzung": row.get("uebersetzung"),
+                "genus": row.get("genus", ""),
+                "status": row.get("status", "neu"),
+                "richtig": row.get("richtig", 0),
+                "falsch": row.get("falsch", 0),
+                "updated_at": row.get("updated_at")
+            } for row in merged_rows if isinstance(row, dict) and row.get("wort")]
+
             if payloads:
                 supabase.table("vokabeln").insert(payloads).execute()
         return {"status": "synced"}

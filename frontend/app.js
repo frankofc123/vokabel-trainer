@@ -4,6 +4,8 @@ let currentLanguage = 'Latein';
 let testPool = [];
 let testIdx = 0;
 let score = 0;
+let syncInProgress = false;
+let syncDebounceTimer = null;
 
 // === SCHRITT 1: DER START-WÄCHTER (REIN SYNCHRON) ===
 window.addEventListener('DOMContentLoaded', () => {
@@ -14,6 +16,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (savedUser && savedHash && loginStatus === 'true') {
         currentUser = savedUser;
         showApp();
+        refreshFromServer({ silent: true });
     } else {
         const az = document.getElementById('auth-zone');
         const lz = document.getElementById('app-zone');
@@ -26,6 +29,19 @@ window.addEventListener('DOMContentLoaded', () => {
     if (loginBtn) {
         loginBtn.addEventListener('click', handleLoginAttempt);
     }
+
+    window.addEventListener('online', () => {
+        updateSyncStatus('Online – Synchronisierung wird gestartet…');
+        if (currentUser) {
+            syncPendingChanges({ silent: true });
+        }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && navigator.onLine && currentUser) {
+            refreshFromServer({ silent: true });
+        }
+    });
 });
 
 // === SCHRITT 2: DIE RADIKALE LOGIN-WEICHE (REIN SYNCHRON) ===
@@ -84,7 +100,7 @@ function executeOnlineLogin(user, pass, currentHash) {
         localStorage.setItem('offline_auth_hash', currentHash); 
         localStorage.setItem('is_logged_in', 'true'); 
         showApp();
-        downloadFromServer();
+        refreshFromServer({ silent: true });
     })
     .catch(err => {
         alert("❌ Online-Login fehlgeschlagen. Mac Mini erreichbar?");
@@ -122,6 +138,7 @@ function showApp() {
     const userDisplay = document.getElementById('user-display');
     if (userDisplay) userDisplay.innerText = currentUser;
     
+    updateSyncStatus('Synchronisation bereit');
     buildInterface();
 }
 
@@ -134,18 +151,128 @@ function logout() {
     document.getElementById('password').value = "";
 }
 
-function downloadFromServer() {
+function updateSyncStatus(message, isError = false) {
+    const statusEl = document.getElementById('sync-status');
+    if (!statusEl) return;
+    statusEl.innerText = message;
+    statusEl.className = `small mt-2 ${isError ? 'text-danger' : 'text-muted'}`;
+}
+
+function mergeLessonsData(localLessons, remoteLessons) {
+    const result = JSON.parse(JSON.stringify(localLessons || {}));
+
+    Object.entries(remoteLessons || {}).forEach(([lessonName, remoteVocabs]) => {
+        if (!Array.isArray(remoteVocabs)) return;
+        if (!result[lessonName]) result[lessonName] = [];
+
+        const localVocabs = Array.isArray(result[lessonName]) ? result[lessonName] : [];
+        const localByWord = new Map(localVocabs.map(v => [v.wort, v]));
+
+        remoteVocabs.forEach((remoteVocab) => {
+            if (!remoteVocab || !remoteVocab.wort) return;
+            const localVocab = localByWord.get(remoteVocab.wort);
+            const localTs = localVocab?.updated_at ? new Date(localVocab.updated_at).getTime() : 0;
+            const remoteTs = remoteVocab.updated_at ? new Date(remoteVocab.updated_at).getTime() : 0;
+
+            if (!localVocab) {
+                localVocabs.push(remoteVocab);
+                localByWord.set(remoteVocab.wort, remoteVocab);
+            } else if (remoteTs > localTs) {
+                Object.assign(localVocab, remoteVocab);
+            }
+        });
+
+        result[lessonName] = localVocabs;
+    });
+
+    return result;
+}
+
+function scheduleSync() {
+    const pendingKey = 'sync_pending_' + currentLanguage;
+    localStorage.setItem(pendingKey, 'true');
+
     if (!navigator.onLine || !currentUser) return;
+
+    if (syncDebounceTimer) {
+        window.clearTimeout(syncDebounceTimer);
+    }
+
+    syncDebounceTimer = window.setTimeout(() => {
+        syncPendingChanges({ silent: true });
+    }, 400);
+}
+
+function refreshFromServer(options = {}) {
+    const { silent = true } = options;
+    if (!navigator.onLine || !currentUser) return;
+
     fetch(`${API_URL}/api/vocab/${currentUser}/${currentLanguage}`)
     .then(res => {
         if (res.ok) return res.json();
         throw new Error();
     })
     .then(lessons => {
-        localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(lessons));
+        const localData = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+        const mergedData = mergeLessonsData(localData, lessons);
+        localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(mergedData));
+        if (!silent) {
+            updateSyncStatus('Daten vom Server geladen');
+        }
         buildInterface();
     })
-    .catch(e => buildInterface());
+    .catch(e => {
+        if (!silent) {
+            updateSyncStatus('Serverdaten konnten nicht geladen werden', true);
+        }
+        buildInterface();
+    });
+}
+
+function downloadFromServer() {
+    refreshFromServer({ silent: true });
+}
+
+function syncPendingChanges(options = {}) {
+    const { silent = true, showAlert = false } = options;
+    if (!navigator.onLine || !currentUser || syncInProgress) return;
+
+    const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+    syncInProgress = true;
+    if (!silent) {
+        updateSyncStatus('Synchronisiere…');
+    }
+
+    fetch(`${API_URL}/api/sync/${currentUser}/${currentLanguage}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lessons: data })
+    })
+    .then(res => res.json())
+    .then(resData => {
+        if (resData.status === 'synced') {
+            localStorage.setItem('sync_pending_' + currentLanguage, 'false');
+            localStorage.setItem('last_sync_' + currentLanguage, new Date().toISOString());
+            const lastSync = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+            updateSyncStatus(`Zuletzt synchronisiert: ${lastSync}`);
+            if (showAlert) {
+                alert('Erfolgreich mit dem Server synchronisiert. 🚀');
+            }
+            refreshFromServer({ silent: true });
+        } else {
+            throw new Error('Sync fehlgeschlagen');
+        }
+    })
+    .catch(e => {
+        localStorage.setItem('sync_pending_' + currentLanguage, 'true');
+        updateSyncStatus('Synchronisierung wartet, bis das Gerät wieder online ist…', true);
+        if (showAlert) {
+            alert('Synchronisierung konnte gerade nicht abgeschlossen werden. Die Daten bleiben lokal gespeichert.');
+        }
+    })
+    .finally(() => {
+        syncInProgress = false;
+    });
 }
 
 function changeLanguage() {
@@ -296,7 +423,7 @@ function nextQuestion() {
         document.getElementById('setup-test-zone').classList.remove('d-none');
         document.getElementById('active-test-zone').classList.add('d-none');
         buildInterface();
-        if (navigator.onLine) { triggerSyncSilently(); }
+        if (navigator.onLine) { syncPendingChanges({ silent: true }); }
     }
 }
 
@@ -305,9 +432,18 @@ function saveProgressToLocalStorage(item) {
     let lesson = data[item.origin_file];
     if(lesson) {
         let idx = lesson.findIndex(v => v.wort === item.wort);
-        if(idx !== -1) lesson[idx] = item;
+        if(idx !== -1) {
+            const now = new Date().toISOString();
+            lesson[idx] = {
+                ...lesson[idx],
+                ...item,
+                updated_at: now,
+                created_at: lesson[idx].created_at || item.created_at || now
+            };
+        }
     }
     localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(data));
+    scheduleSync();
 }
 
 function calculateStatistics(data) {
@@ -410,28 +546,13 @@ function createNewLessonOnly() {
 }
 
 function triggerSync() {
-    if (!navigator.onLine) return alert("Du bist offline! Ein Sync ist im Bus nicht möglich.");
-    const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
-    fetch(`${API_URL}/api/sync/${currentUser}/${currentLanguage}`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({lessons: data})
-    })
-    .then(res => res.json())
-    .then(resData => {
-        if(resData.status === 'synced') {
-            alert("Erfolgreich mit Mac Mini synchronisiert! Alle Daten sind gesichert. 🚀");
-            downloadFromServer();
-        }
-    })
-    .catch(e => alert("Mac Mini unter Port 8001 nicht erreichbar."));
+    if (!navigator.onLine) {
+        updateSyncStatus('Du bist gerade offline. Die Änderungen bleiben lokal und werden später synchronisiert.', true);
+        return;
+    }
+    syncPendingChanges({ silent: false, showAlert: true });
 }
 
 function triggerSyncSilently() {
-    const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
-    fetch(`${API_URL}/api/sync/${currentUser}/${currentLanguage}`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({lessons: data})
-    }).catch(e => console.log("Hintergrund-Sync fehlgeschlagen."));
+    syncPendingChanges({ silent: true });
 }

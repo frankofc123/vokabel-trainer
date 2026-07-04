@@ -1,8 +1,10 @@
-const CACHE_NAME = 'vokabel-trainer-v2';
+const CACHE_NAME = 'vokabel-trainer-v3';
 const ASSETS = [
   '/',
   '/index.html',
-  '/manifest.json'
+  '/app.js',
+  '/manifest.json',
+  '/icons/monochrome.svg'
 ];
 
 // Installation: Ressourcen sichern und Fehler abfangen
