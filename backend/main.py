@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -119,7 +120,7 @@ def sync_vocab(username: str, lang: str, data: SyncData):
                 "status": row.get("status", "neu"),
                 "richtig": row.get("richtig", 0),
                 "falsch": row.get("falsch", 0),
-                "updated_at": row.get("updated_at")
+                "updated_at": row.get("updated_at") or datetime.utcnow().isoformat() + "Z"
             } for row in merged_rows if isinstance(row, dict) and row.get("wort")]
 
             if payloads:
