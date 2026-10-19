@@ -4,6 +4,56 @@ from sync_logic import merge_lessons
 
 
 class MergeLessonsTests(unittest.TestCase):
+    def test_duplicate_server_rows_keep_only_the_newest_state(self):
+        existing_rows = [
+            {
+                "user": "alex",
+                "sprache": "latein",
+                "lexikon": "Lektion 1",
+                "wort": "domus",
+                "status": "nochmal üben",
+                "richtig": 0,
+                "falsch": 4,
+                "updated_at": "2024-01-01T00:00:00Z",
+            },
+            {
+                "user": "alex",
+                "sprache": "latein",
+                "lexikon": "Lektion 1",
+                "wort": "domus",
+                "status": "sehr gut",
+                "richtig": 3,
+                "falsch": 4,
+                "updated_at": "2024-01-02T00:00:00Z",
+            },
+        ]
+
+        merged = merge_lessons(existing_rows, {}, "alex", "latein")
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["status"], "sehr gut")
+        self.assertEqual(merged[0]["richtig"], 3)
+
+    def test_rows_for_other_users_or_languages_are_not_merged(self):
+        existing_rows = [
+            {
+                "user": "other",
+                "sprache": "latein",
+                "lexikon": "Lektion 1",
+                "wort": "domus",
+            },
+            {
+                "user": "alex",
+                "sprache": "englisch",
+                "lexikon": "Lektion 1",
+                "wort": "house",
+            },
+        ]
+
+        merged = merge_lessons(existing_rows, {}, "alex", "latein")
+
+        self.assertEqual(merged, [])
+
     def test_newer_remote_update_wins(self):
         existing_rows = [
             {

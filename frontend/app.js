@@ -4,20 +4,70 @@ let currentLanguage = 'Latein';
 let testPool = [];
 let testIdx = 0;
 let score = 0;
-let syncInProgress = false;
+let syncInProgress = new Set();
 let syncDebounceTimer = null;
+let sessionGeneration = 0;
+
+function lessonsStorageKey(username = currentUser, language = currentLanguage) {
+    if (!username) return null;
+    return `lessons:v2:${encodeURIComponent(username)}:${encodeURIComponent(language.toLowerCase())}`;
+}
+
+function syncPendingStorageKey(username = currentUser, language = currentLanguage) {
+    if (!username) return null;
+    return `sync_pending:v2:${encodeURIComponent(username)}:${encodeURIComponent(language.toLowerCase())}`;
+}
+
+function sessionTokenStorageKey(username) {
+    return `session_token:v2:${encodeURIComponent(username)}`;
+}
+
+function offlineVerifierStorageKey(username) {
+    return `offline_verifier:v2:${encodeURIComponent(username)}`;
+}
+
+function getSessionToken(username = currentUser) {
+    return username ? localStorage.getItem(sessionTokenStorageKey(username)) : null;
+}
+
+function authenticatedHeaders(username = currentUser, extraHeaders = {}) {
+    const token = getSessionToken(username);
+    return token ? { ...extraHeaders, Authorization: `Bearer ${token}` } : extraHeaders;
+}
+
+function hasPendingChanges(username = currentUser, language = currentLanguage) {
+    const key = syncPendingStorageKey(username, language);
+    return key ? localStorage.getItem(key) === 'true' : false;
+}
+
+async function deriveOfflineVerifier(username, password) {
+    const encoder = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({
+        name: 'PBKDF2',
+        salt: encoder.encode(`vokabel-trainer-offline-v2:${username}`),
+        iterations: 210000,
+        hash: 'SHA-256'
+    }, keyMaterial, 256);
+    return btoa(String.fromCharCode(...new Uint8Array(bits)));
+}
 
 // === SCHRITT 1: DER START-WÄCHTER (REIN SYNCHRON) ===
 window.addEventListener('DOMContentLoaded', () => {
     const savedUser = localStorage.getItem('last_user');
-    const savedHash = localStorage.getItem('offline_auth_hash');
     const loginStatus = localStorage.getItem('is_logged_in'); 
+    currentLanguage = localStorage.getItem('last_language') || 'Latein';
+    document.getElementById('lang-select').value = currentLanguage;
+    document.getElementById('lang-select-mobile').value = currentLanguage;
     
-    if (savedUser && savedHash && loginStatus === 'true') {
+    const hasOfflineVerifier = savedUser && localStorage.getItem(offlineVerifierStorageKey(savedUser));
+    if (savedUser && loginStatus === 'true' && (getSessionToken(savedUser) || (!navigator.onLine && hasOfflineVerifier))) {
         currentUser = savedUser;
+        sessionGeneration++;
         showApp();
         refreshFromServer({ silent: true });
     } else {
+        localStorage.setItem('is_logged_in', 'false');
         const az = document.getElementById('auth-zone');
         const lz = document.getElementById('app-zone');
         if (az) az.classList.remove('d-none');
@@ -33,7 +83,11 @@ window.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('online', () => {
         updateSyncStatus('Online – Synchronisierung wird gestartet…');
         if (currentUser) {
-            syncPendingChanges({ silent: true });
+            if (hasPendingChanges()) {
+                syncPendingChanges({ silent: true });
+            } else {
+                refreshFromServer({ silent: true });
+            }
         }
     });
 
@@ -45,7 +99,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // === SCHRITT 2: DIE RADIKALE LOGIN-WEICHE (REIN SYNCHRON) ===
-function handleLoginAttempt() {
+async function handleLoginAttempt() {
     // 1. DIAGNOSE-ALARM: Tut der Button überhaupt physisch etwas?
 
     const userInput = document.getElementById('username');
@@ -59,25 +113,35 @@ function handleLoginAttempt() {
     const pass = passInput.value;
 
 
-    const currentHash = btoa(user.toLowerCase() + ":" + pass);
     const storedUser = localStorage.getItem('last_user');
-    const storedHash = localStorage.getItem('offline_auth_hash');
-
-
-    if (storedUser && storedUser.toLowerCase() === user.toLowerCase() && storedHash === currentHash) {
-        currentUser = storedUser;
-        localStorage.setItem('is_logged_in', 'true'); 
-        showApp();
+    if (!navigator.onLine) {
+        if (!storedUser || storedUser.toLowerCase() !== user.toLowerCase()) {
+            alert('Offline-Anmeldung ist nur für ein zuvor auf diesem Gerät angemeldetes Konto möglich.');
+            return;
+        }
+        try {
+            const verifier = await deriveOfflineVerifier(storedUser, pass);
+            if (localStorage.getItem(offlineVerifierStorageKey(storedUser)) !== verifier) {
+                alert('Offline-Anmeldung fehlgeschlagen. Bitte Zugangsdaten prüfen.');
+                return;
+            }
+            currentUser = storedUser;
+            sessionGeneration++;
+            localStorage.setItem('is_logged_in', 'true');
+            showApp();
+        } catch (error) {
+            alert('Offline-Anmeldung wird von diesem Browser nicht unterstützt.');
+        }
         return;
     }
 
-    executeOnlineLogin(user, pass, currentHash);
+    executeOnlineLogin(user, pass);
 }
 
 // === SCHRITT 3: ISOLIERTE NETZWERK-PROZESSE (KOMPLETT ABGEKAPSELT) ===
 
 // Reiner Online-Login, falls lokal kein Match vorliegt
-function executeOnlineLogin(user, pass, currentHash) {
+function executeOnlineLogin(user, pass) {
     if (!navigator.onLine) {
         alert("🚫 Login fehlgeschlagen!\nDie Daten stimmen nicht mit den gespeicherten Offline-Daten überein.");
         return;
@@ -92,18 +156,25 @@ function executeOnlineLogin(user, pass, currentHash) {
         if (res.ok) {
             return res.json();
         }
-        throw new Error("Falsche Zugangsdaten");
+        throw new Error('Falsche Zugangsdaten oder Anmeldung nicht verfügbar');
     })
-    .then(resData => {
-        currentUser = resData.username || user;
+    .then(async resData => {
+        if (!resData.username || !resData.access_token) {
+            throw new Error('Backend-Sitzungstoken fehlt');
+        }
+        currentUser = resData.username;
+        sessionGeneration++;
+        const verifier = await deriveOfflineVerifier(currentUser, pass);
         localStorage.setItem('last_user', currentUser);
-        localStorage.setItem('offline_auth_hash', currentHash); 
+        localStorage.setItem(offlineVerifierStorageKey(currentUser), verifier);
+        localStorage.setItem(sessionTokenStorageKey(currentUser), resData.access_token);
         localStorage.setItem('is_logged_in', 'true'); 
         showApp();
         refreshFromServer({ silent: true });
     })
     .catch(err => {
-        alert("❌ Online-Login fehlgeschlagen. Mac Mini erreichbar?");
+        console.error('Login-Fehler:', err);
+        alert(`Online-Anmeldung fehlgeschlagen: ${err.message}`);
     });
 }
 
@@ -130,6 +201,7 @@ function login() {
 
 // === SCHRITT 4: APP-LOGIK UND ENGINE ===
 function showApp() {
+    if (!currentUser) return;
     const az = document.getElementById('auth-zone');
     const lz = document.getElementById('app-zone');
     if (az) az.classList.add('d-none');
@@ -143,12 +215,28 @@ function showApp() {
 }
 
 function logout() {
+    sessionGeneration++;
+    if (syncDebounceTimer) {
+        window.clearTimeout(syncDebounceTimer);
+        syncDebounceTimer = null;
+    }
+    if (currentUser) {
+        localStorage.removeItem(sessionTokenStorageKey(currentUser));
+    }
     localStorage.setItem('is_logged_in', 'false');
+    currentUser = null;
+    testPool = [];
+    testIdx = 0;
+    score = 0;
     const az = document.getElementById('auth-zone');
     const lz = document.getElementById('app-zone');
     if (az) az.classList.remove('d-none');
     if (lz) lz.classList.add('d-none');
-    document.getElementById('password').value = "";
+    document.getElementById('password').value = '';
+    document.getElementById('username').value = '';
+    document.getElementById('user-display').innerText = '—';
+    document.getElementById('active-test-zone').classList.add('d-none');
+    document.getElementById('setup-test-zone').classList.remove('d-none');
 }
 
 function updateSyncStatus(message, isError = false) {
@@ -189,7 +277,8 @@ function mergeLessonsData(localLessons, remoteLessons) {
 }
 
 function scheduleSync() {
-    const pendingKey = 'sync_pending_' + currentLanguage;
+    const pendingKey = syncPendingStorageKey();
+    if (!pendingKey) return;
     localStorage.setItem(pendingKey, 'true');
 
     if (!navigator.onLine || !currentUser) return;
@@ -203,30 +292,48 @@ function scheduleSync() {
     }, 400);
 }
 
-function refreshFromServer(options = {}) {
+async function refreshFromServer(options = {}) {
     const { silent = true } = options;
     if (!navigator.onLine || !currentUser) return;
+    const username = currentUser;
+    const language = currentLanguage;
+    const generation = sessionGeneration;
+    if (!getSessionToken(username)) {
+        if (!silent) updateSyncStatus('Bitte online erneut anmelden, um die Sitzung zu erneuern.', true);
+        return;
+    }
 
-    fetch(`${API_URL}/api/vocab/${currentUser}/${currentLanguage}`)
-    .then(res => {
-        if (res.ok) return res.json();
-        throw new Error();
-    })
-    .then(lessons => {
-        const localData = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
-        const mergedData = mergeLessonsData(localData, lessons);
-        localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(mergedData));
+    try {
+        const response = await fetch(`${API_URL}/api/vocab/${encodeURIComponent(username)}/${encodeURIComponent(language)}`, {
+            headers: authenticatedHeaders(username)
+        });
+        if (!response.ok) {
+            if (response.status === 401) {
+                logout();
+                return;
+            }
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const remoteLessons = await response.json();
+        if (generation !== sessionGeneration || username !== currentUser || language !== currentLanguage) return;
+
+        const localKey = lessonsStorageKey(username, language);
+        const localData = JSON.parse(localStorage.getItem(localKey) || '{}');
+        const lessons = hasPendingChanges(username, language)
+            ? mergeLessonsData(localData, remoteLessons)
+            : remoteLessons;
+        localStorage.setItem(localKey, JSON.stringify(lessons));
         if (!silent) {
             updateSyncStatus('Daten vom Server geladen');
         }
         buildInterface();
-    })
-    .catch(e => {
+    } catch (error) {
+        if (generation !== sessionGeneration || username !== currentUser) return;
         if (!silent) {
-            updateSyncStatus('Serverdaten konnten nicht geladen werden', true);
+            updateSyncStatus(`Serverdaten konnten nicht geladen werden: ${error.message}`, true);
         }
         buildInterface();
-    });
+    }
 }
 
 function downloadFromServer() {
@@ -235,17 +342,27 @@ function downloadFromServer() {
 
 function syncPendingChanges(options = {}) {
     const { silent = true, showAlert = false } = options;
-    if (!navigator.onLine || !currentUser || syncInProgress) return;
+    if (!navigator.onLine || !currentUser) return;
 
-    const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
-    syncInProgress = true;
+    const username = currentUser;
+    const language = currentLanguage;
+    const generation = sessionGeneration;
+    const syncKey = `${username}:${language.toLowerCase()}`;
+    if (syncInProgress.has(syncKey) || (!options.force && !hasPendingChanges(username, language))) return;
+    if (!getSessionToken(username)) {
+        updateSyncStatus('Bitte online erneut anmelden, um die Sitzung zu erneuern.', true);
+        return;
+    }
+    const storageKey = lessonsStorageKey(username, language);
+    const data = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    syncInProgress.add(syncKey);
     if (!silent) {
         updateSyncStatus('Synchronisiere…');
     }
 
-    fetch(`${API_URL}/api/sync/${currentUser}/${currentLanguage}`, {
+    fetch(`${API_URL}/api/sync/${encodeURIComponent(username)}/${encodeURIComponent(language)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authenticatedHeaders(username, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ lessons: data })
     })
     .then(async res => {
@@ -257,14 +374,19 @@ function syncPendingChanges(options = {}) {
             throw new Error(`Invalid JSON response: ${text}`);
         }
         if (!res.ok) {
+            if (res.status === 401) {
+                localStorage.removeItem(sessionTokenStorageKey(username));
+                logout();
+            }
             throw new Error(json.detail || json.message || `HTTP ${res.status}`);
         }
         return json;
     })
     .then(resData => {
         if (resData.status === 'synced') {
-            localStorage.setItem('sync_pending_' + currentLanguage, 'false');
-            localStorage.setItem('last_sync_' + currentLanguage, new Date().toISOString());
+            if (generation !== sessionGeneration || username !== currentUser) return;
+            localStorage.setItem(syncPendingStorageKey(username, language), 'false');
+            localStorage.setItem(`last_sync:v2:${encodeURIComponent(username)}:${encodeURIComponent(language.toLowerCase())}`, new Date().toISOString());
             const lastSync = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
             updateSyncStatus(`Zuletzt synchronisiert: ${lastSync}`);
             if (showAlert) {
@@ -277,20 +399,24 @@ function syncPendingChanges(options = {}) {
     })
     .catch(e => {
         console.error('Sync-Fehler:', e);
-        localStorage.setItem('sync_pending_' + currentLanguage, 'true');
+        if (generation !== sessionGeneration || username !== currentUser) return;
+        localStorage.setItem(syncPendingStorageKey(username, language), 'true');
         updateSyncStatus(`Synchronisierung fehlgeschlagen: ${e.message}`, true);
         if (showAlert) {
             alert(`Synchronisierung konnte gerade nicht abgeschlossen werden:\n${e.message}`);
         }
     })
     .finally(() => {
-        syncInProgress = false;
+        syncInProgress.delete(syncKey);
     });
 }
 
 function changeLanguage() {
     const desktopSelect = document.getElementById('lang-select');
     currentLanguage = desktopSelect ? desktopSelect.value : 'Latein';
+    localStorage.setItem('last_language', currentLanguage);
+    document.getElementById('lang-select-mobile').value = currentLanguage;
+    buildInterface();
     downloadFromServer();
 }
 
@@ -305,8 +431,12 @@ function switchPage(pageId) {
 }
 
 function buildInterface() {
-    const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
     const checkboxZone = document.getElementById('lessons-checkboxes');
+    if (!currentUser) {
+        if (checkboxZone) checkboxZone.innerHTML = '';
+        return;
+    }
+    const data = JSON.parse(localStorage.getItem(lessonsStorageKey()) || '{}');
     if (!checkboxZone) return;
     
     checkboxZone.innerHTML = '';
@@ -322,7 +452,7 @@ function buildInterface() {
 }
 
 function startTest() {
-    const data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+    const data = JSON.parse(localStorage.getItem(lessonsStorageKey()) || '{}');
     let combined = [];
     
     const filterNochmal = document.getElementById('f-nochmal').checked;
@@ -441,7 +571,9 @@ function nextQuestion() {
 }
 
 function saveProgressToLocalStorage(item) {
-    let data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+    const storageKey = lessonsStorageKey();
+    if (!storageKey) return;
+    let data = JSON.parse(localStorage.getItem(storageKey) || '{}');
     let lesson = data[item.origin_file];
     if(lesson) {
         let idx = lesson.findIndex(v => v.wort === item.wort);
@@ -455,7 +587,7 @@ function saveProgressToLocalStorage(item) {
             };
         }
     }
-    localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(data));
+    localStorage.setItem(storageKey, JSON.stringify(data));
     scheduleSync();
 }
 
@@ -549,10 +681,13 @@ function renderLibrary(data) {
 function createNewLessonOnly() {
     const name = document.getElementById('new-lesson-name').value.trim();
     if(!name) return alert("Bitte Namen eingeben!");
-    let data = JSON.parse(localStorage.getItem('lessons_' + currentLanguage) || '{}');
+    const storageKey = lessonsStorageKey();
+    if (!storageKey) return;
+    let data = JSON.parse(localStorage.getItem(storageKey) || '{}');
     if(data[name]) return alert("Lektion existiert bereits!");
     data[name] = [];
-    localStorage.setItem('lessons_' + currentLanguage, JSON.stringify(data));
+    localStorage.setItem(storageKey, JSON.stringify(data));
+    scheduleSync();
     document.getElementById('new-lesson-name').value = '';
     alert(`Lektion '${name}' erfolgreich lokal angelegt!`);
     buildInterface();
@@ -563,7 +698,7 @@ function triggerSync() {
         updateSyncStatus('Du bist gerade offline. Die Änderungen bleiben lokal und werden später synchronisiert.', true);
         return;
     }
-    syncPendingChanges({ silent: false, showAlert: true });
+    syncPendingChanges({ silent: false, showAlert: true, force: true });
 }
 
 function triggerSyncSilently() {

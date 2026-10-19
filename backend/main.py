@@ -1,10 +1,11 @@
-from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timedelta, timezone
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 from supabase import create_client
 from passlib.hash import pbkdf2_sha256
+import jwt
 import json
 from dotenv import load_dotenv
 from sync_logic import merge_lessons
@@ -25,6 +26,8 @@ app.add_middleware(
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+APP_AUTH_SECRET = os.environ.get("APP_AUTH_SECRET")
+APP_AUTH_TOKEN_TTL = int(os.environ.get("APP_AUTH_TOKEN_TTL", "2592000"))
 print(f"Supabase config: url set={bool(SUPABASE_URL)}, key set={bool(SUPABASE_KEY)}")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -54,20 +57,46 @@ def register(user: UserAuth):
 def login(user: UserAuth):
     # Suche den User in der neuen Tabelle
     response = supabase.table("users")\
-        .select("password_hash")\
-        .ilike("username", user.username)\
-        .single()\
+        .select("username,password_hash")\
+        .eq("username", user.username)\
+        .limit(1)\
         .execute()
 
-    if response.data and pbkdf2_sha256.verify(user.password, response.data["password_hash"]):
-        return {"status": "success", "username": user.username}
+    user_record = response.data[0] if response.data else None
+    if user_record and pbkdf2_sha256.verify(user.password, user_record["password_hash"]):
+        if not APP_AUTH_SECRET:
+            raise HTTPException(status_code=503, detail="APP_AUTH_SECRET ist auf dem Backend nicht konfiguriert")
+        username = user_record["username"]
+        token = jwt.encode({
+            "sub": username,
+            "exp": datetime.now(timezone.utc) + timedelta(seconds=APP_AUTH_TOKEN_TTL),
+        }, APP_AUTH_SECRET, algorithm="HS256")
+        return {"status": "success", "username": username, "access_token": token}
     
     raise HTTPException(status_code=400, detail="Falsche Logindaten")
+
+
+def authenticated_user(authorization: str = Header(default="")) -> str:
+    if not APP_AUTH_SECRET or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Anmeldung erforderlich")
+    token = authorization.removeprefix("Bearer ")
+    try:
+        payload = jwt.decode(token, APP_AUTH_SECRET, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Sitzung ungültig oder abgelaufen")
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(status_code=401, detail="Sitzung enthält keinen Nutzer")
+    return username
     
 # --- VOKABEL-LOGIK (Jetzt komplett in Supabase) ---
 
 @app.get("/api/vocab/{username}/{lang}")
-def get_vocab(username: str, lang: str):
+def get_vocab(username: str, lang: str, authenticated_username: str = Depends(authenticated_user)):
+    if username != authenticated_username:
+        raise HTTPException(status_code=403, detail="Zugriff auf diesen Nutzer ist nicht erlaubt")
+    if lang.lower() not in {"latein", "englisch"}:
+        raise HTTPException(status_code=422, detail="Nicht unterstützte Sprache")
     try:
         response = supabase.table("vokabeln")\
             .select("*")\
@@ -102,11 +131,19 @@ def debug():
     }
 
 @app.post("/api/sync/{username}/{lang}")
-def sync_vocab(username: str, lang: str, data: SyncData):
+def sync_vocab(username: str, lang: str, data: SyncData, authenticated_username: str = Depends(authenticated_user)):
+    if username != authenticated_username:
+        raise HTTPException(status_code=403, detail="Zugriff auf diesen Nutzer ist nicht erlaubt")
+    if lang.lower() not in {"latein", "englisch"}:
+        raise HTTPException(status_code=422, detail="Nicht unterstützte Sprache")
     try:
         for lesson_name, vocabs in data.lessons.items():
             if lesson_name in ["nochmal", "gut", "f-nochmal", "f-gut"]:
                 continue
+            if not isinstance(lesson_name, str) or not lesson_name.strip():
+                raise HTTPException(status_code=422, detail="Ungültiger Lexikonname")
+            if not isinstance(vocabs, list):
+                raise HTTPException(status_code=422, detail=f"Lektion {lesson_name} muss eine Vokabelliste sein")
 
             existing_response = supabase.table("vokabeln")\
                 .select("*")\
@@ -117,28 +154,33 @@ def sync_vocab(username: str, lang: str, data: SyncData):
 
             merged_rows = merge_lessons(existing_response.data or [], {lesson_name: vocabs}, username, lang)
 
-            delete_response = supabase.table("vokabeln").delete()\
-                .eq("user", username).eq("sprache", lang.lower()).eq("lexikon", lesson_name).execute()
-            if getattr(delete_response, 'error', None):
-                raise HTTPException(status_code=500, detail=str(delete_response.error))
-
-            payloads = [{
-                "user": row.get("user", username),
-                "sprache": row.get("sprache", lang.lower()),
-                "lexikon": row.get("lexikon", lesson_name),
-                "wort": row.get("wort"),
-                "uebersetzung": row.get("uebersetzung"),
-                "genus": row.get("genus", ""),
-                "status": row.get("status", "neu"),
-                "richtig": row.get("richtig", 0),
-                "falsch": row.get("falsch", 0),
-                "updated_at": row.get("updated_at") or datetime.utcnow().isoformat() + "Z"
-            } for row in merged_rows if isinstance(row, dict) and row.get("wort")]
+            payloads = []
+            for row in merged_rows:
+                if not isinstance(row, dict) or not row.get("wort"):
+                    continue
+                payload = {
+                    "user": username,
+                    "sprache": lang.lower(),
+                    "lexikon": lesson_name,
+                    "wort": row["wort"],
+                    "uebersetzung": row.get("uebersetzung"),
+                    "genus": row.get("genus", ""),
+                    "status": row.get("status", "neu"),
+                    "richtig": row.get("richtig", 0),
+                    "falsch": row.get("falsch", 0),
+                    "updated_at": row.get("updated_at") or datetime.utcnow().isoformat() + "Z",
+                }
+                if row.get("origin_file") is not None:
+                    payload["origin_file"] = row["origin_file"]
+                payloads.append(payload)
 
             if payloads:
-                insert_response = supabase.table("vokabeln").insert(payloads).execute()
-                if getattr(insert_response, 'error', None):
-                    raise HTTPException(status_code=500, detail=str(insert_response.error))
+                supabase.table("vokabeln").upsert(
+                    payloads,
+                    on_conflict="user,sprache,lexikon,wort"
+                ).execute()
         return {"status": "synced"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

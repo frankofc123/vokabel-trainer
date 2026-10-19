@@ -35,7 +35,6 @@ def _get_effective_ts(row: dict):
 
 
 def merge_lessons(existing_rows, incoming_lessons, username: str, lang: str):
-    merged = []
     incoming_by_word = {}
 
     for lesson_name, vocabs in incoming_lessons.items():
@@ -44,47 +43,48 @@ def merge_lessons(existing_rows, incoming_lessons, username: str, lang: str):
                 continue
             incoming_by_word[(lesson_name, vocab["wort"])] = vocab
 
+    existing_by_word = {}
     for row in existing_rows:
         if row.get("user") != username or row.get("sprache") != lang.lower():
             continue
 
         lesson_name = row.get("lexikon")
         word = row.get("wort")
-        incoming = incoming_by_word.get((lesson_name, word))
+        key = (lesson_name, word)
+        current = existing_by_word.get(key)
+        if current is None or _get_effective_ts(row) > _get_effective_ts(current):
+            existing_by_word[key] = row
 
-        if incoming is None:
-            merged.append(row)
+    merged = list(existing_by_word.values())
+    merged_by_word = {(row.get("lexikon"), row.get("wort")): row for row in merged}
+
+    for key, incoming in incoming_by_word.items():
+        existing = merged_by_word.get(key)
+        if existing is None:
+            lesson_name, word = key
+            new_row = {
+                "user": username,
+                "sprache": lang.lower(),
+                "lexikon": lesson_name,
+                "wort": word,
+                "uebersetzung": incoming.get("uebersetzung"),
+                "genus": incoming.get("genus", ""),
+                "status": incoming.get("status", "neu"),
+                "richtig": incoming.get("richtig", 0),
+                "falsch": incoming.get("falsch", 0),
+                "created_at": incoming.get("created_at"),
+                "updated_at": incoming.get("updated_at"),
+            }
+            merged.append(new_row)
+            merged_by_word[key] = new_row
             continue
 
-        existing_ts = _get_effective_ts(row)
-        incoming_ts = _get_effective_ts(incoming)
-
-        if incoming_ts > existing_ts:
-            merged.append({
-                **row,
-                "status": incoming.get("status", row.get("status")),
-                "richtig": incoming.get("richtig", row.get("richtig", 0)),
-                "falsch": incoming.get("falsch", row.get("falsch", 0)),
-                "updated_at": incoming.get("updated_at", row.get("updated_at")),
+        if _get_effective_ts(incoming) > _get_effective_ts(existing):
+            existing.update({
+                "status": incoming.get("status", existing.get("status")),
+                "richtig": incoming.get("richtig", existing.get("richtig", 0)),
+                "falsch": incoming.get("falsch", existing.get("falsch", 0)),
+                "updated_at": incoming.get("updated_at", existing.get("updated_at")),
             })
-        else:
-            merged.append(row)
-
-    # If an incoming word exists but wasn't present in existing rows, add it.
-    for (lesson_name, word), incoming in incoming_by_word.items():
-        if any(item.get("lexikon") == lesson_name and item.get("wort") == word for item in merged):
-            continue
-        merged.append({
-            "user": username,
-            "sprache": lang.lower(),
-            "lexikon": lesson_name,
-            "wort": incoming.get("wort"),
-            "uebersetzung": incoming.get("uebersetzung"),
-            "genus": incoming.get("genus", ""),
-            "status": incoming.get("status", "neu"),
-            "richtig": incoming.get("richtig", 0),
-            "falsch": incoming.get("falsch", 0),
-            "updated_at": incoming.get("updated_at"),
-        })
 
     return merged

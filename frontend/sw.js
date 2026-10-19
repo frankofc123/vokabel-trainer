@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vokabel-trainer-v3';
+const CACHE_NAME = 'vokabel-trainer-v4';
 const ASSETS = [
   '/',
   '/index.html',
@@ -40,22 +40,25 @@ self.addEventListener('activate', (event) => {
 
 // Strategie: Sofort lokal aus dem Cache laden (Cache-First)
 self.addEventListener('fetch', (event) => {
-  // Lokale API- & Login-Anfragen an den Mac Mini NIEMALS cachen
-  if (event.request.url.includes('/api/') || event.request.url.includes('/login')) {
+  const requestUrl = new URL(event.request.url);
+  if (event.request.method !== 'GET' || requestUrl.origin !== self.location.origin) {
     return;
   }
+  if (requestUrl.pathname.startsWith('/api/') || requestUrl.pathname === '/login') return;
 
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse; // Sofort ausgeben (Bus-Rettung!)
+    fetch(event.request).then((response) => {
+      if (response.ok) {
+        return caches.open(CACHE_NAME)
+          .then((cache) => cache.put(event.request, response.clone()))
+          .then(() => response);
       }
-      return fetch(event.request).catch(() => {
-        // Fallback, falls gar nichts mehr geht
-        if (event.request.mode === 'navigate') {
-          return caches.match('/index.html');
-        }
-      });
+      return response;
+    }).catch(async () => {
+      const cachedResponse = await caches.match(event.request);
+      if (cachedResponse) return cachedResponse;
+      if (event.request.mode === 'navigate') return caches.match('/index.html');
+      return Response.error();
     })
   );
 });
